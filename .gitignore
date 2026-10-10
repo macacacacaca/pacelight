@@ -1,0 +1,7 @@
+node_modules/
+*.vsix
+preview.html
+.DS_Store
+*.log
+# Claude Code 在專案裡留下的本機狀態（session 鎖檔、settings.local.json 常含個人路徑）
+.claude/

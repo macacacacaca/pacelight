@@ -1,0 +1,12 @@
+.vscode/**
+.claude/**
+.github/**
+test/**
+scripts/**
+node_modules/**
+jsconfig.json
+*.vsix
+*.log
+.gitignore
+preview.html
+docs/icon.svg

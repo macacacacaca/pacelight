@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2A2C30"/><stop offset="1" stop-color="#111214"/></linearGradient>
+    <radialGradient id="glow"><stop offset="0" stop-color="#62F59A" stop-opacity=".6"/><stop offset=".4" stop-color="#4ADE80" stop-opacity=".2"/><stop offset="1" stop-color="#4ADE80" stop-opacity="0"/></radialGradient>
+    <clipPath id="clip"><rect width="512" height="512" rx="114"/></clipPath>
+  </defs>
+  <g clip-path="url(#clip)">
+    <rect width="512" height="512" fill="url(#bg)"/>
+    <path d="M66.7 542.7 A196 196 0 1 1 445.3 542.7" fill="none" stroke="#3D4045" stroke-width="8" stroke-linecap="round"/>
+    <path d="M-58.9 576.4 A326 326 0 1 1 570.9 576.4" fill="none" stroke="#3D4045" stroke-width="8" stroke-linecap="round"/>
+    <circle cx="310.3" cy="236.7" r="92" fill="url(#glow)"/>
+    <circle cx="2.8" cy="428.9" r="10.221052631578948" fill="rgba(74,222,128,0.27)"/>
+    <circle cx="19.5" cy="381.7" r="10.56842105263158" fill="rgba(74,222,128,0.35)"/>
+    <circle cx="44.8" cy="338.6" r="10.91578947368421" fill="rgba(74,222,128,0.43)"/>
+    <circle cx="78" cy="301.1" r="11.263157894736842" fill="rgba(74,222,128,0.51)"/>
+    <circle cx="117.7" cy="270.7" r="11.610526315789475" fill="rgba(74,222,128,0.60)"/>
+    <circle cx="162.5" cy="248.3" r="11.957894736842105" fill="rgba(74,222,128,0.68)"/>
+    <circle cx="210.7" cy="235" r="12.305263157894736" fill="rgba(74,222,128,0.76)"/>
+    <circle cx="260.6" cy="231" r="12.652631578947368" fill="rgba(74,222,128,0.84)"/>
+    <circle cx="310.3" cy="236.7" r="19" fill="#62F59A"/>
+    <circle cx="358" cy="251.7" r="10" fill="#2B2E33"/>
+    <circle cx="401.9" cy="275.6" r="10" fill="#2B2E33"/>
+    <circle cx="440.6" cy="307.4" r="10" fill="#2B2E33"/>
+    <circle cx="472.4" cy="346.1" r="10" fill="#2B2E33"/>
+    <circle cx="496.3" cy="390" r="10" fill="#2B2E33"/>
+  </g>
+</svg>
