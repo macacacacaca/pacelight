@@ -8,7 +8,7 @@ const vscode = require('vscode');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { readCredentials, fetchUsage, UsageError } = require('./src/usage');
+const { readCredentials, fetchUsage, fetchProfile, UsageError } = require('./src/usage');
 const { renderView } = require('./src/format');
 const { TokenLedger } = require('./src/tokens');
 
@@ -20,9 +20,14 @@ const RENDER_TICK_MS = 30_000; // 只重畫倒數時間，不連網
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const LEDGER_MIN_GAP_MS = 20_000; // 切換視窗時常常觸發更新，對話記錄不用掃那麼勤
 const HOUR_MS = 3_600_000;
+const PLAN_TTL_MS = 60 * 60_000; // 方案名稱（profile 端點）最多一小時查一次；手動更新一律重查
 
 /** @typedef {import('./src/usage').Usage} Usage */
-/** @typedef {{ usage: Usage, fetchedAt: number, plan: string | null }} Snapshot */
+/**
+ * plan／tier 來自 profile 端點，planFetchedAt 是上次查方案的時間（失敗也算，免得一直重試）。
+ * 舊版快取沒有 tier 與 planFetchedAt，讀到時當 null。
+ * @typedef {{ usage: Usage, fetchedAt: number, plan: string | null, tier?: string | null, planFetchedAt?: number | null }} Snapshot
+ */
 
 /**
  * 預期外的錯誤（多半是檔案系統錯誤）訊息裡常有絕對路徑。這些訊息會寫進記錄、顯示在卡片上，
@@ -214,10 +219,12 @@ function activate(context) {
     }
     inflight = (async () => {
       const { intervalMs } = config();
+      /** @type {Snapshot | null} 另一個視窗寫的快取；用量過期了，方案名稱可能還新鮮 */
+      let cached = null;
       try {
         await updateLedger();
         if (!force) {
-          const cached = await readCache();
+          cached = await readCache();
           const now = Date.now();
           const age = cached ? now - cached.fetchedAt : -1;
           if (cached && age >= 0 && age < intervalMs * 0.9 && !hasPassedReset(cached, now)) {
@@ -239,7 +246,38 @@ function activate(context) {
         }
         const usage = await fetchUsage(cred.accessToken);
         if (disposed) return;
-        last = { usage, fetchedAt: Date.now(), plan: cred.subscriptionType };
+
+        // 方案名稱／等級以 profile 端點為準，最多一小時查一次（手動更新一律重查）。
+        // 憑證裡的 subscriptionType 只在登入時寫入、升級後不會更新，只當備援。
+        const prev = last ?? cached;
+        const prevPlan = typeof prev?.plan === 'string' ? prev.plan : cred.subscriptionType;
+        const prevTier = typeof prev?.tier === 'string' ? prev.tier : null;
+        let plan = prevPlan;
+        let tier = prevTier;
+        let planFetchedAt = typeof prev?.planFetchedAt === 'number' ? prev.planFetchedAt : null;
+        const planAge = planFetchedAt == null ? NaN : Date.now() - planFetchedAt; // 時鐘倒退時當作過期
+        const needPlan = force || !(planAge >= 0 && planAge < PLAN_TTL_MS);
+        if (needPlan) {
+          try {
+            const p = await fetchProfile(cred.accessToken);
+            if (p.plan) {
+              plan = p.plan;
+              tier = p.tier;
+            } else {
+              // 回應格式變了、讀不到方案：沿用上次查到的（沒有才用憑證裡的），並留下記錄
+              warn('Plan lookup returned no plan; keeping the previous one');
+            }
+          } catch (e) {
+            // 只影響標籤，用量照常顯示：不算進失敗次數、不退避、不顯示錯誤
+            const err = asUsageError(e);
+            warn(`Plan lookup failed (${err.code}): ${err.message}`);
+            plan = prevPlan;
+            tier = prevTier;
+          }
+          planFetchedAt = Date.now(); // 失敗也等一小時再試（手動更新除外）
+          if (disposed) return;
+        }
+        last = { usage, fetchedAt: Date.now(), plan, tier, planFetchedAt };
         lastError = null;
         failures = 0;
         backoffUntil = 0;

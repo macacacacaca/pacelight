@@ -42,8 +42,8 @@ Pacelight sits in the status bar next to "✻ Claude Code" and stays out of the 
 - **A straight answer.** Hover, and the first sentence answers the question you actually have: *"At this pace, the 7-day limit runs out tomorrow (Fri) around 11 PM, 3d 22h before it resets."* Then how to make it: *"To last until Tue 10:00 PM, keep it under 8% a day."*
 - **See the pace.** Each window gets a bar with a marker for how much of its time has passed. The hatched part past the marker is usage that's over pace.
 - **What it would have cost.** The tokens Claude Code used on this computer in each window, and what they would cost at Anthropic API list prices.
-- **Every limit on your plan.** Per-model weekly limits, like Max's Sonnet-only limit, appear on the card and trigger the warning colors too.
-- **Light on the network.** One request every 2 minutes by default, shared by all VS Code windows, with back-off on errors.
+- **Every limit on your plan.** Per-model weekly limits, like a Max plan's Sonnet-only or Fable-only limit, appear on the card as compact rows under the 7-day limit and trigger the warning colors too. Both the older per-model fields and the newer `limits[]` list in the server's response are read.
+- **Light on the network.** One request every 2 minutes by default, shared by all VS Code windows, with back-off on errors. The plan name is looked up at most once an hour.
 - **Readable without color.** States are spelled out in words, and the status bar and card have screen reader text.
 - **English and 繁體中文.**
 
@@ -63,10 +63,10 @@ Tested on macOS. On Linux and Windows it reads the credentials file from the loc
 | | What Pacelight does |
 |:--|:--|
 | **Data collected** | None. No telemetry, no analytics. |
-| **Network** | One request: `GET https://api.anthropic.com/api/oauth/usage`. Nothing else is contacted. |
+| **Network** | Two requests, both to `api.anthropic.com` and nothing else: usage from `GET https://api.anthropic.com/api/oauth/usage` (every 2 minutes by default), and the plan name from `GET https://api.anthropic.com/api/oauth/profile` (at most once an hour, and on a manual refresh). |
 | **Your login token** | Read from Claude Code's own storage and sent only to `api.anthropic.com`. Never written to logs or disk, and never refreshed. |
 | **Your transcripts** | Only token counts, model names, and timestamps are kept, in memory. Conversation content is never stored or sent. |
-| **On disk** | `last-usage.json` in the extension's storage: percentages, reset times, plan name, and when they were fetched. |
+| **On disk** | `last-usage.json` in the extension's storage: percentages, reset times, the plan name and tier (e.g. Max 5x), and when the usage and the plan were fetched. Your email and name are never stored. |
 
 The User-Agent identifies this extension (`pacelight/<version>`), not Claude Code.
 
@@ -121,10 +121,11 @@ To hide Pacelight, right-click the status bar and uncheck "Pacelight".
 <br>
 
 1. Pacelight reads Claude Code's subscription login token from the macOS Keychain item "Claude Code-credentials" (on other platforms, from `~/.claude/.credentials.json`).
-2. It calls `GET https://api.anthropic.com/api/oauth/usage` with that token and reads `five_hour.utilization` and `seven_day.utilization`.
+2. It calls `GET https://api.anthropic.com/api/oauth/usage` with that token and reads `five_hour.utilization` and `seven_day.utilization`, plus any per-model weekly limits (`seven_day_opus`, `seven_day_sonnet`, or `weekly_scoped` entries in `limits[]`).
+3. For the plan label on the card it calls `GET https://api.anthropic.com/api/oauth/profile` and keeps only `organization.organization_type` (Pro, Max, …) and `rate_limit_tier` (the 5x / 20x), at most once an hour and on every manual refresh. Claude Code's own credentials also contain a `subscriptionType`, but it's written only at login and isn't updated when you change plans, so it's used only as a fallback when the plan can't be read from the profile and nothing was looked up before.
 
 - The token is only read, never refreshed. Refreshing would rotate the refresh token and could sign Claude Code out. When the token expires, the status bar marks the numbers as out of date and the card explains why; Claude Code refreshes the token the next time it sends a message.
-- The endpoint is undocumented and may change. If it does, the status bar marks the numbers as out of date and the card shows a warning. The parsing is in [src/usage.js](src/usage.js).
+- Both endpoints are undocumented and may change. If the usage one does, the status bar marks the numbers as out of date and the card shows a warning; if the profile one does, the card just keeps the last plan label. The parsing is in [src/usage.js](src/usage.js).
 - Only subscription logins (Pro, Max, …) have this data. API-key logins show "No subscription login".
 
 </details>
@@ -169,7 +170,7 @@ npm run check:privacy  # before pushing or publishing: looks for personal info a
 ```
 
 - Open this folder in VS Code and press F5 to try it in an Extension Development Host window.
-- To install your build in your everyday VS Code, run `npm run package`, then `code --install-extension pacelight-0.1.0.vsix`, then "Developer: Reload Window". On macOS, if the `code` command isn't found, first run "Shell Command: Install 'code' command in PATH" from the Command Palette.
+- To install your build in your everyday VS Code, run `npm run package`, then `code --install-extension pacelight-0.1.1.vsix`, then "Developer: Reload Window". On macOS, if the `code` command isn't found, first run "Shell Command: Install 'code' command in PATH" from the Command Palette.
 
 | File | Contents |
 |:--|:--|

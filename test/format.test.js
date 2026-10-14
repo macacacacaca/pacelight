@@ -20,6 +20,9 @@ const usage = (five, fiveIn, seven, sevenIn, extras = []) => ({
 });
 const TODAY = usage(13, 3 * H + 5 * M, 54, 5 * D + 8 * H + 25 * M); // 平常的一天：5 小時從容、7 天偏快
 const sonnet = (percent, resetsIn) => ({ key: 'seven_day_sonnet', label: 'Sonnet', window: { percent, resetsAt: resetsIn == null ? null : NOW + resetsIn } });
+// 新版回應 limits[] 裡的模型專屬週額度（parseUsage 產生的 key 是 weekly_scoped_<名稱>）
+const fable = (percent, resetsIn) => ({ key: 'weekly_scoped_fable', label: 'Fable', window: { percent, resetsAt: resetsIn == null ? null : NOW + resetsIn } });
+const count = (/** @type {string} */ s, /** @type {string} */ sub) => s.split(sub).length - 1;
 
 /** @param {any} u @param {any} [error] */
 const view = (u, error = null, extra = {}) =>
@@ -60,6 +63,17 @@ test('Max 方案的「僅 Sonnet」也會觸發狀態列與摘要', () => {
   assert.match(v.ariaLabel, /7 天・所有模型 40%；7 天・僅 Sonnet 98%，快用完了/);
   // 還沒開始用的額外區間不列出
   assert.equal(f.rowsOf(usage(20, 3 * H, 40, 4 * D, [sonnet(0, null)]), NOW, zh).length, 2);
+});
+
+test('「僅 Fable」一切正常時不進狀態列，快用完時才會', () => {
+  const calm = view(usage(13, 3 * H + 5 * M, 54, 5 * D + 8 * H + 25 * M, [fable(58, 5 * D + 8 * H + 25 * M)]));
+  assert.equal(calm.text, '5h 13% · 7d 54% 偏快');
+  assert.equal(calm.level, 'normal');
+  assert.match(calm.ariaLabel, /7 天・僅 Fable 58%/);
+  const out = view(usage(20, 3 * H, 40, 4 * D, [fable(98, 4 * D)]));
+  assert.equal(out.text, '$(error) 7d Fable 98% · 週一 13:35 重置');
+  assert.equal(out.level, 'error');
+  assert.match(svgOf(out.tooltip), />快用完了</);
 });
 
 test('顯示的數字和顏色一致（無條件捨去）', () => {
@@ -161,12 +175,77 @@ test('卡片：還沒開始計時的區間', () => {
   assert.match(svg, />未開始</);
 });
 
-test('卡片：Max 方案多一列，標籤說清楚「所有模型」與「僅 Sonnet」', () => {
-  const one = f.renderCard({ usage: TODAY, plan: 'max', fetchedAt: NOW, stale: false, theme: 'dark', warn: 80, err: 95, now: NOW, lang: 'zh-TW' });
-  const two = f.renderCard({ usage: { ...TODAY, extras: [sonnet(41, 28 * H)] }, plan: 'max', fetchedAt: NOW, stale: false, theme: 'dark', warn: 80, err: 95, now: NOW, lang: 'zh-TW' });
-  assert.equal(two.height - one.height, 66);
+const card = (/** @type {any} */ usage, /** @type {object} */ extra = {}) =>
+  f.renderCard({ usage, plan: 'max', fetchedAt: NOW, stale: false, theme: 'dark', warn: 80, err: 95, now: NOW, lang: 'zh-TW', ...extra });
+
+test('卡片：Max 方案多一條精簡列（列高 40，圖例前多留 10），標籤說清楚「所有模型」與「僅 Sonnet」', () => {
+  const one = card(TODAY);
+  const two = card({ ...TODAY, extras: [sonnet(41, 28 * H)] });
+  assert.equal(two.height - one.height, 50);
   assert.match(two.svg, /7 天・所有模型/);
   assert.match(two.svg, /7 天・僅 Sonnet/);
+  assert.match(two.svg, />41<tspan/);
+  // 精簡列沒有重置時間那一行（和 7 天列同一個重置時間）
+  assert.equal(count(two.svg, '重置'), count(one.svg, '重置'));
+  assert.doesNotMatch(two.svg, /週五 17:35/);
+  assert.match(two.svg, /clip-seven_day_sonnet/);
+});
+
+test('卡片：limits[] 來的「僅 Fable」精簡列', () => {
+  const svg = card({ ...TODAY, extras: [fable(58, 5 * D)] }).svg;
+  assert.match(svg, /7 天・僅 Fable/);
+  assert.match(svg, /7 天・所有模型/);
+  assert.match(svg, />58<tspan/);
+  assert.match(svg, /<clipPath id="clip-weekly_scoped_fable">/);
+  assert.match(svg, /<pattern id="hatch-weekly_scoped_fable"/); // 58% 比時間快，有斜紋
+  assert.match(svg, />偏快</); // 精簡列一律用短版標籤
+  assert.match(svg, />偏快，時間才過 24%</); // 主列照舊
+  // 精簡列的字比主列小
+  assert.match(svg, /font-size="12" font-weight="500" fill="#B0AEA5">7 天・僅 Fable</);
+  assert.match(svg, /font-size="16" font-weight="600"[^>]*>58<tspan font-size="11"/);
+  // 資料過時時精簡列也一起淡出：Fable 列要在淡出群組裡面，而群組一路包到卡片結尾（沒有 token 表時）
+  const stale = card({ ...TODAY, extras: [fable(58, 5 * D)] }, { stale: true }).svg;
+  const group = stale.indexOf('<g opacity="0.45">');
+  assert.ok(group >= 0 && stale.indexOf('7 天・僅 Fable') > group);
+  assert.ok(stale.endsWith('</g></svg>'));
+});
+
+test('卡片：精簡列在最後一列、週額度剛重置時，步調線不會碰到圖例的標記', () => {
+  // 剛重置：時間過不到 1%，步調線貼在最左邊（x=3），正好和圖例的小圓點（cx=3）同一條垂直線
+  const svg = card(usage(20, 3 * H, 1, 7 * D - 10 * M, [fable(1, 7 * D - 10 * M)])).svg;
+  const lines = [...svg.matchAll(/<rect x="2" y="(\d+(?:\.\d+)?)" width="2" height="16"/g)].map((m) => Number(m[1]) + 16);
+  const legend = [...svg.matchAll(/<circle cx="3" cy="(\d+(?:\.\d+)?)" r="2\.5"/g)].map((m) => Number(m[1]) - 2.5);
+  assert.ok(lines.length >= 1 && legend.length >= 1, '應該有貼在左邊的步調線和圖例的圓點');
+  const lastLineBottom = Math.max(...lines);
+  const legendTop = Math.max(...legend);
+  assert.ok(legendTop - lastLineBottom >= 5, `圖例的圓點（${legendTop}）要在最後一條步調線（${lastLineBottom}）下面至少 5px`);
+});
+
+test('卡片：精簡列快用完時有「快用完了」標籤，7 天本身快用完時精簡列不標', () => {
+  const svg = card(usage(20, 3 * H, 40, 4 * D, [fable(98, 4 * D)])).svg;
+  assert.match(svg, />快用完了</);
+  assert.match(svg, />98<tspan/);
+  // 7 天額度本身 97%：主列標「快用完了」，精簡列不再重複
+  const both = card(usage(20, 3 * H, 97, 4 * D, [fable(60, 4 * D)])).svg;
+  assert.equal(count(both, '>快用完了<'), 1);
+  assert.doesNotMatch(both, />偏快</); // Fable 60% 本來是「偏快」，7 天快用完時連這個也不標
+});
+
+test('卡片：方案標籤帶等級（Max 5x）', () => {
+  assert.match(card(TODAY, { plan: 'max', tier: 'default_claude_max_5x' }).svg, />Max 5x</);
+  assert.match(card(TODAY, { plan: 'max', tier: 'default_claude_max_20x' }).svg, />Max 20x</);
+  const plain = card(TODAY, { plan: 'max', tier: null }).svg;
+  assert.match(plain, />Max</);
+  assert.doesNotMatch(plain, />Max \d+x</);
+  assert.match(card(TODAY, { plan: 'max' }).svg, />Max</);
+  assert.match(card(TODAY, { plan: 'pro', tier: 'default_claude_pro' }).svg, />Pro</);
+  assert.match(card(TODAY, { plan: 'team', tier: 'enterprise' }).svg, />Team</);
+  assert.match(card(TODAY, { plan: 'ultra<', tier: 'default_claude_ultra_7x' }).svg, />ultra&lt; 7x</);
+  assert.doesNotMatch(card(TODAY, { plan: null, tier: 'default_claude_max_5x' }).svg, /5x/);
+  // renderView 把快照裡的 tier 傳給卡片；舊快取沒有 tier 也行
+  const v = f.renderView({ snapshot: { usage: TODAY, fetchedAt: NOW - M, plan: 'max', tier: 'default_claude_max_5x' }, error: null, format: '', warn: 80, err: 95, theme: 'dark', now: NOW });
+  assert.match(svgOf(v.tooltip), />Max 5x</);
+  assert.match(svgOf(view(TODAY).tooltip), />Pro</);
 });
 
 test('卡片：每種主題都畫得出來，文字有跳脫', () => {

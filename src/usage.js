@@ -1,12 +1,14 @@
 // @ts-check
 'use strict';
 
-// 讀取 Claude Code 的訂閱登入，向 /api/oauth/usage 查詢 5 小時 / 7 天用量。
-// 這和 Claude Code 自己的 /usage、狀態列 rate_limits 是同一份資料。
+// 讀取 Claude Code 的訂閱登入，向 /api/oauth/usage 查詢 5 小時 / 7 天用量，
+// 向 /api/oauth/profile 查詢方案名稱（Pro、Max 5x…）。
+// 用量和 Claude Code 自己的 /usage、狀態列 rate_limits 是同一份資料。
+// 方案名稱以 profile 端點為準：鑰匙圈憑證裡的 subscriptionType 只在登入時寫入、升級方案後不會更新，所以只當備援。
 // 這個檔案不依賴 vscode，可以直接用 node 測試。
 //
 // 注意：
-// - 這個端點沒有公開文件，日後可能改變；解析時一律防禦性處理。
+// - 這兩個端點沒有公開文件，日後可能改變；解析時一律防禦性處理。
 // - 只「讀」權杖，從不自己刷新。刷新會輪替 refresh token，可能讓 Claude Code 被登出；
 //   權杖過期時等 Claude Code 自己刷新即可（送出任何訊息就會）。
 
@@ -17,6 +19,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
+const PROFILE_URL = 'https://api.anthropic.com/api/oauth/profile';
 const KEYCHAIN_SERVICE = 'Claude Code-credentials';
 const USER_AGENT = `pacelight/${require('../package.json').version}`;
 
@@ -135,11 +138,26 @@ function toWindow(/** @type {any} */ w) {
   return { percent: pct, resetsAt: Number.isFinite(at) ? at : null };
 }
 
-// Max 方案另外有「只算某個模型」的 7 天額度
+// Max 方案另外有「只算某個模型」的 7 天額度（舊版回應放在頂層欄位）
 const EXTRA_WINDOWS = [
   ['seven_day_opus', 'Opus'],
   ['seven_day_sonnet', 'Sonnet'],
 ];
+
+/**
+ * 新版回應把模型專屬的週額度放在 limits[] 裡（kind 是 weekly_scoped），
+ * 名稱在 scope.model.display_name（例如 Fable），少數情況在 scope.surface.display_name。
+ * @param {any} entry
+ * @returns {string | null}
+ */
+function scopedLabel(entry) {
+  const scope = entry.scope && typeof entry.scope === 'object' ? entry.scope : null;
+  for (const part of [scope?.model, scope?.surface]) {
+    const name = part && typeof part === 'object' ? part.display_name : null;
+    if (typeof name === 'string' && name.trim()) return name.replace(/\s+/g, ' ').trim();
+  }
+  return null;
+}
 
 /**
  * @param {any} body
@@ -158,23 +176,73 @@ function parseUsage(body) {
   if (!fiveHour && !sevenDay) {
     throw new UsageError('bad-response', 'No 5-hour or 7-day data in usage response');
   }
+  /** @type {Usage['extras']} */
   const extras = [];
   for (const [key, label] of EXTRA_WINDOWS) {
     const w = toWindow(body[key]);
     if (w) extras.push({ key, label, window: w });
   }
+  for (const entry of limits) {
+    if (!entry || typeof entry !== 'object' || entry.kind !== 'weekly_scoped') continue;
+    const label = scopedLabel(entry);
+    const w = label ? toWindow(entry) : null;
+    if (!label || !w) continue;
+    // key 會變成 SVG 的 clip／pattern id，只留安全字元；同一個模型兩種寫法都出現時只列一次
+    const key = `weekly_scoped_${label.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+    if (extras.some((e) => e.key === key || e.label.toLowerCase() === label.toLowerCase())) continue;
+    extras.push({ key, label, window: w });
+  }
   return { fiveHour, sevenDay, extras };
 }
 
 /**
+ * @typedef {{ plan: string | null, tier: string | null }} Profile
+ */
+
+// organization_type → 方案 key（顯示名稱在 format.js 的 PLAN_NAMES）
+const PLAN_BY_ORG = /** @type {Record<string, string>} */ ({
+  claude_pro: 'pro',
+  claude_max: 'max',
+  claude_team: 'team',
+  claude_enterprise: 'enterprise',
+});
+
+/**
+ * 只取方案 key 與等級（例如 default_claude_max_5x）。回應裡的 email、名字、uuid 一律不帶出：
+ * 回傳值會原樣寫進快取檔。
+ * @param {any} body
+ * @returns {Profile}
+ */
+function parseProfile(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new UsageError('bad-response', 'Unexpected profile response');
+  }
+  const org = body.organization && typeof body.organization === 'object' ? body.organization : {};
+  const account = body.account && typeof body.account === 'object' ? body.account : {};
+  let plan = null;
+  if (typeof org.organization_type === 'string') {
+    const type = org.organization_type.toLowerCase();
+    if (PLAN_BY_ORG[type]) plan = PLAN_BY_ORG[type];
+    else if (type.startsWith('claude_') && type.length > 'claude_'.length) plan = type.slice('claude_'.length);
+  }
+  if (!plan) {
+    if (account.has_claude_max === true) plan = 'max';
+    else if (account.has_claude_pro === true) plan = 'pro';
+  }
+  return { plan, tier: typeof org.rate_limit_tier === 'string' ? org.rate_limit_tier : null };
+}
+
+/**
+ * 帶權杖向 api.anthropic.com 取一份 JSON；usage 與 profile 端點共用，錯誤分類也相同。
+ * @param {string} url
  * @param {string} accessToken
  * @param {{ timeoutMs?: number, fetchImpl?: typeof fetch }} [opts]
- * @returns {Promise<Usage>}
+ * @returns {Promise<any>}
  */
-async function fetchUsage(accessToken, { timeoutMs = 15000, fetchImpl = fetch } = {}) {
+async function getJson(url, accessToken, { timeoutMs = 15000, fetchImpl = fetch } = {}) {
   let res;
   try {
-    res = await fetchImpl(USAGE_URL, {
+    res = await fetchImpl(url, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'anthropic-beta': 'oauth-2025-04-20',
@@ -199,13 +267,30 @@ async function fetchUsage(accessToken, { timeoutMs = 15000, fetchImpl = fetch } 
   }
   if (!res.ok) throw new UsageError('http', `Server returned HTTP ${res.status}`, { detail: `HTTP ${res.status}` });
 
-  let body;
   try {
-    body = await res.json();
+    return await res.json();
   } catch {
-    throw new UsageError('bad-response', 'Usage response is not JSON');
+    throw new UsageError('bad-response', 'Response is not JSON');
   }
-  return parseUsage(body);
 }
 
-module.exports = { UsageError, readCredentials, fetchUsage, parseUsage, parseRetryAfter };
+/**
+ * @param {string} accessToken
+ * @param {{ timeoutMs?: number, fetchImpl?: typeof fetch }} [opts]
+ * @returns {Promise<Usage>}
+ */
+async function fetchUsage(accessToken, opts) {
+  return parseUsage(await getJson(USAGE_URL, accessToken, opts));
+}
+
+/**
+ * 方案名稱與等級（鑰匙圈裡的 subscriptionType 升級後不會更新，所以另外查）。
+ * @param {string} accessToken
+ * @param {{ timeoutMs?: number, fetchImpl?: typeof fetch }} [opts]
+ * @returns {Promise<Profile>}
+ */
+async function fetchProfile(accessToken, opts) {
+  return parseProfile(await getJson(PROFILE_URL, accessToken, opts));
+}
+
+module.exports = { UsageError, readCredentials, fetchUsage, fetchProfile, parseUsage, parseProfile, parseRetryAfter };

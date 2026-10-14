@@ -12,6 +12,7 @@ const NOW = new Date(2026, 9, 8, 13, 35).getTime();
 const LANG = process.argv[3] || 'en';
 const H = 3_600_000;
 const M = 60_000;
+const D = 24 * H;
 
 const THEMES = {
   dark: {
@@ -33,7 +34,8 @@ const usage = (five, fiveIn, seven, sevenIn, extras = []) => ({
   sevenDay: { percent: seven, resetsAt: NOW + sevenIn },
   extras,
 });
-const snap = (u, plan = 'pro') => ({ usage: u, fetchedAt: NOW - 1 * M, plan });
+const snap = (u, plan = 'pro', tier = null) => ({ usage: u, fetchedAt: NOW - 1 * M, plan, tier });
+const scoped = (key, label, percent, resetsIn) => ({ key, label, window: { percent, resetsAt: NOW + resetsIn } });
 const summary = (total, cacheRead, cost) => ({ input: 0, output: 0, cacheWrite: 0, cacheRead, total, cost, unpricedTokens: 0, requests: 1, topModel: 'Opus 5.5', topModelShare: 1 });
 const TOKENS = { five_hour: summary(3.9e6, 3.4e6, 4.9), seven_day: summary(267.4e6, 254.6e6, 153.27) };
 
@@ -41,12 +43,14 @@ const SCENARIOS = [
   { title: '平常', theme: 'dark', snapshot: snap(usage(13, 3 * H + 5 * M, 54, 5 * 24 * H + 8 * H + 25 * M)), tokens: TOKENS },
   { title: '兩項都從容', theme: 'dark', snapshot: snap(usage(8, 4 * H, 12, 6 * 24 * H)) },
   { title: '5 小時接近上限', theme: 'dark', snapshot: snap(usage(86, 42 * M, 60, 3 * 24 * H)) },
-  { title: '7 天快用完（Max 方案）', theme: 'dark', snapshot: snap(usage(30, 2 * H, 97, 1 * 24 * H + 4 * H, [{ key: 'seven_day_sonnet', label: 'Sonnet', window: { percent: 41, resetsAt: NOW + 1 * 24 * H + 4 * H } }]), 'max') },
+  { title: '7 天快用完（Max 方案）', theme: 'dark', snapshot: snap(usage(30, 2 * H, 97, 1 * D + 4 * H, [scoped('seven_day_sonnet', 'Sonnet', 41, 1 * D + 4 * H)]), 'max', 'default_claude_max_20x') },
+  { title: 'Max 5x・僅 Fable 58%', theme: 'dark', snapshot: snap(usage(18, 2 * H, 29, 6 * D + 8 * H, [scoped('weekly_scoped_fable', 'Fable', 58, 6 * D + 8 * H)]), 'max', 'default_claude_max_5x') },
+  { title: 'Max 5x・僅 Fable 快用完', theme: 'dark', snapshot: snap(usage(20, 3 * H, 40, 4 * D, [scoped('weekly_scoped_fable', 'Fable', 98, 4 * D)]), 'max', 'default_claude_max_5x') },
   { title: '更新失敗（顯示舊資料）', theme: 'dark', snapshot: snap(usage(13, 3 * H, 54, 5 * 24 * H)), error: { code: 'network', message: '連不上伺服器（ENOTFOUND）' } },
   { title: '淺色主題', theme: 'light', snapshot: snap(usage(13, 3 * H + 5 * M, 54, 5 * 24 * H + 8 * H + 25 * M)), tokens: TOKENS },
   { title: '淺色主題・接近上限', theme: 'light', snapshot: snap(usage(91, 25 * M, 70, 2 * 24 * H)) },
   { title: '兩項都用完', theme: 'dark', snapshot: snap(usage(100, 1 * H, 100, 2 * 24 * H + 3 * H)) },
-  { title: '僅 Sonnet 快用完（Max）', theme: 'dark', snapshot: snap(usage(20, 3 * H, 40, 4 * 24 * H, [{ key: 'seven_day_sonnet', label: 'Sonnet', window: { percent: 98, resetsAt: NOW + 4 * 24 * H } }]), 'max') },
+  { title: '僅 Sonnet 快用完（Max）', theme: 'dark', snapshot: snap(usage(20, 3 * H, 40, 4 * D, [scoped('seven_day_sonnet', 'Sonnet', 98, 4 * D)]), 'max', 'default_claude_max_20x') },
   { title: '接近上限時連不上', theme: 'dark', snapshot: snap(usage(86, 42 * M, 60, 3 * 24 * H)), error: { code: 'network', message: 'x' } },
   { title: '沒有訂閱登入', theme: 'dark', snapshot: null, error: { code: 'no-login', message: 'x' } },
   { title: '高對比主題', theme: 'hc-dark', snapshot: snap(usage(13, 3 * H + 5 * M, 54, 5 * 24 * H + 8 * H + 25 * M)) },

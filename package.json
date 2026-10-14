@@ -2,7 +2,7 @@
   "name": "pacelight",
   "displayName": "Pacelight",
   "description": "Unofficial status bar gauge for your Claude subscription's 5-hour and 7-day usage limits, with pace. Works with Claude Code. Not affiliated with Anthropic.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "local",
   "icon": "docs/icon.png",
   "private": true,

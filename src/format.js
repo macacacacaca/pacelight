@@ -117,7 +117,7 @@ function windowState(w, lengthMs, now) {
  */
 
 /**
- * 全部區間（含 Max 方案的「僅 Opus／僅 Sonnet」）。沒資料、或額外區間還沒開始用的不列出。
+ * 全部區間（含 Max 方案「僅 Opus／僅 Sonnet／僅 Fable」這類模型專屬的週額度）。沒資料、或額外區間還沒開始用的不列出。
  * @param {Usage} usage
  * @param {number} now
  * @param {Locale} L
@@ -336,7 +336,8 @@ const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, 
 
 const CARD_W = 360;
 const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang TC', 'Microsoft JhengHei', 'Segoe UI', system-ui, sans-serif";
-const ROW_H = 66;
+const ROW_H = 66; // 主列：標籤＋大百分比、長條、重置時間與狀態
+const EXTRA_ROW_H = 40; // 精簡列（模型專屬的週額度）：重置時間和 7 天列相同，不再印一次
 
 /**
  * 粗估文字寬度（SVG 不會自動換行，得自己算）。寧可估寬一點：估窄了字會被切掉。
@@ -389,36 +390,27 @@ function wrap(text, size, maxW, bold = false) {
   return lines;
 }
 
+/** @typedef {{ warn: number, err: number, now: number, hideTag: boolean, L: Locale }} RowOpts */
+
 /**
- * 一列：標籤和大百分比同一條基線；長條（步調線）；重置時間與狀態。
- * @param {Row} row
- * @param {number} y
+ * 長條：軌道 → 已用（實心；超過步調線的部分用陶土橘斜紋）→ 步調線。主列與精簡列共用。
+ * @param {string} key clip／pattern 的 id 用
+ * @param {Row['s']} s
+ * @param {number} barY
  * @param {typeof PALETTES.dark} c
- * @param {{ warn: number, err: number, now: number, hideTag: boolean, L: Locale }} o
+ * @param {string | null} levelColor 警告／錯誤色；正常時 null
  */
-function windowRow({ def, s }, y, c, o) {
-  const { L } = o;
-  const p = shown(s.percent);
-  const level = levelOf(s.percent, o.warn, o.err);
-  const levelColor = level === 'error' ? c.error : level === 'warning' ? c.warning : null;
+function bar(key, s, barY, c, levelColor) {
   const usedW = clamp(s.percent / 100) * CARD_W;
   const paceX = s.elapsed == null ? null : clamp(s.elapsed * CARD_W, 3, CARD_W - 3);
-  const barY = y + 26;
   const out = [];
-
-  out.push(
-    `<text x="0" y="${y + 16}" font-size="13" font-weight="500" fill="${c.secondary}">${esc(def.label)}</text>`,
-    `<text x="${CARD_W}" y="${y + 16}" text-anchor="end" font-size="22" font-weight="600" fill="${levelColor ?? c.text}" style="font-variant-numeric: tabular-nums">${p}<tspan font-size="13" font-weight="500" fill="${c.secondary}" dx="1">%</tspan></text>`
-  );
-
-  // 長條：軌道 → 已用（實心；超過步調線的部分用陶土橘斜紋）→ 步調線
   out.push(`<rect x="0" y="${barY}" width="${CARD_W}" height="8" rx="4" fill="${c.track}"/>`);
   if (usedW > 0) {
-    const clip = `clip-${def.key}`;
+    const clip = `clip-${key}`;
     out.push(`<clipPath id="${clip}"><rect x="0" y="${barY}" width="${Math.max(usedW, 8)}" height="8" rx="4"/></clipPath>`, `<g clip-path="url(#${clip})">`);
     out.push(`<rect x="0" y="${barY}" width="${CARD_W}" height="8" fill="${levelColor ?? c.fill}"/>`);
     if (!levelColor && s.ahead && paceX != null) {
-      const hatch = `hatch-${def.key}`;
+      const hatch = `hatch-${key}`;
       out.push(
         `<pattern id="${hatch}" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="4" height="4" fill="${c.track}"/><rect width="2.5" height="4" fill="${c.accent}"/></pattern>`,
         `<rect x="${paceX}" y="${barY}" width="${CARD_W}" height="8" fill="url(#${hatch})"/>`
@@ -434,6 +426,47 @@ function windowRow({ def, s }, y, c, o) {
       `<circle cx="${paceX}" cy="${barY - 5}" r="2.5" fill="${c.pace}"/>`
     );
   }
+  return out.join('');
+}
+
+/**
+ * 狀態標籤與顏色：已用完 → 快用完 → 接近上限 → 未開始 → 偏快（長版；要不要縮短由各列決定）。
+ * @param {Row['s']} s
+ * @param {number} p
+ * @param {Level} level
+ * @param {typeof PALETTES.dark} c
+ * @param {Locale} L
+ * @returns {{ text: string, color: string, ahead: boolean }}
+ */
+function tagOf(s, p, level, c, L) {
+  if (p >= 100) return { text: L.tag.usedUp, color: c.error, ahead: false };
+  if (level === 'error') return { text: L.tag.error, color: c.error, ahead: false };
+  if (level === 'warning') return { text: L.tag.warning, color: c.warning, ahead: false };
+  if (s.notStarted) return { text: L.tag.notStarted, color: c.secondary, ahead: false };
+  if (s.ahead && s.elapsed != null) return { text: L.tag.ahead(Math.round(s.elapsed * 100)), color: c.accent, ahead: true };
+  return { text: '', color: c.secondary, ahead: false };
+}
+
+/**
+ * 主列：標籤和大百分比同一條基線；長條（步調線）；重置時間與狀態。
+ * @param {Row} row
+ * @param {number} y
+ * @param {typeof PALETTES.dark} c
+ * @param {RowOpts} o
+ */
+function windowRow({ def, s }, y, c, o) {
+  const { L } = o;
+  const p = shown(s.percent);
+  const level = levelOf(s.percent, o.warn, o.err);
+  const levelColor = level === 'error' ? c.error : level === 'warning' ? c.warning : null;
+  const barY = y + 26;
+  const out = [];
+
+  out.push(
+    `<text x="0" y="${y + 16}" font-size="13" font-weight="500" fill="${c.secondary}">${esc(def.label)}</text>`,
+    `<text x="${CARD_W}" y="${y + 16}" text-anchor="end" font-size="22" font-weight="600" fill="${levelColor ?? c.text}" style="font-variant-numeric: tabular-nums">${p}<tspan font-size="13" font-weight="500" fill="${c.secondary}" dx="1">%</tspan></text>`,
+    bar(def.key, s, barY, c, levelColor)
+  );
 
   // 重置時間（一天內講還有多久，超過一天講時刻）與狀態
   const infoY = barY + 24;
@@ -445,28 +478,59 @@ function windowRow({ def, s }, y, c, o) {
   else info = L.info.later(L.clock(s.resetsAt, o.now), L.duration(s.resetsAt - o.now));
   out.push(`<text x="0" y="${infoY}" font-size="12" fill="${c.tertiary}">${esc(info)}</text>`);
 
-  let tag = '';
-  let tagColor = c.secondary;
-  if (p >= 100) [tag, tagColor] = [L.tag.usedUp, c.error];
-  else if (level === 'error') [tag, tagColor] = [L.tag.error, c.error];
-  else if (level === 'warning') [tag, tagColor] = [L.tag.warning, c.warning];
-  else if (s.notStarted) tag = L.tag.notStarted;
-  else if (s.ahead && s.elapsed != null) {
-    tagColor = c.accent;
-    tag = L.tag.ahead(Math.round(s.elapsed * 100));
-    if (textWidth(info, 12) + textWidth(tag, 12) + 16 > CARD_W) tag = L.tag.aheadShort;
-  }
+  const t = tagOf(s, p, level, c, L);
+  let tag = t.text;
+  // 「偏快，時間才過 24%」和重置時間擠不下時改用短版
+  if (t.ahead && textWidth(info, 12) + textWidth(tag, 12) + 16 > CARD_W) tag = L.tag.aheadShort;
   if (tag && !o.hideTag) {
-    const weight = tagColor === c.secondary ? 400 : 600;
-    out.push(`<text x="${CARD_W}" y="${infoY}" text-anchor="end" font-size="12" font-weight="${weight}" fill="${tagColor}">${esc(tag)}</text>`);
+    const weight = t.color === c.secondary ? 400 : 600;
+    out.push(`<text x="${CARD_W}" y="${infoY}" text-anchor="end" font-size="12" font-weight="${weight}" fill="${t.color}">${esc(tag)}</text>`);
   }
   return out.join('');
 }
 
-/** 標題與方案標籤（有資料、沒資料的卡片共用） */
-function header(/** @type {typeof PALETTES.dark} */ c, /** @type {Locale} */ L, /** @type {string | null} */ plan) {
+/**
+ * 精簡列（僅 Fable／僅 Sonnet 這類模型專屬的週額度）：標籤、狀態標籤、百分比同一條基線，下面一條長條。
+ * 它和上面的 7 天列是同一個每週視窗、同一個重置時間，所以沒有重置時間那一行，卡片才不會太高。
+ * @param {Row} row
+ * @param {number} y
+ * @param {typeof PALETTES.dark} c
+ * @param {RowOpts} o
+ */
+function extraRow({ def, s }, y, c, o) {
+  const { L } = o;
+  const p = shown(s.percent);
+  const level = levelOf(s.percent, o.warn, o.err);
+  const levelColor = level === 'error' ? c.error : level === 'warning' ? c.warning : null;
+  const textY = y + 14;
+  const out = [
+    `<text x="0" y="${textY}" font-size="12" font-weight="500" fill="${c.secondary}">${esc(def.label)}</text>`,
+    `<text x="${CARD_W}" y="${textY}" text-anchor="end" font-size="16" font-weight="600" fill="${levelColor ?? c.text}" style="font-variant-numeric: tabular-nums">${p}<tspan font-size="11" font-weight="500" fill="${c.secondary}" dx="1">%</tspan></text>`,
+  ];
+  const t = tagOf(s, p, level, c, L);
+  const tag = t.ahead ? L.tag.aheadShort : t.text;
+  if (tag && !o.hideTag) {
+    const weight = t.color === c.secondary ? 400 : 600;
+    const x = Math.round(CARD_W - (textWidth(String(p), 16, true) + 1 + textWidth('%', 11)) - 10);
+    out.push(`<text x="${x}" y="${textY}" text-anchor="end" font-size="11" font-weight="${weight}" fill="${t.color}">${esc(tag)}</text>`);
+  }
+  out.push(bar(def.key, s, y + 24, c, levelColor));
+  return out.join('');
+}
+
+/**
+ * 標題與方案標籤（有資料、沒資料的卡片共用）。
+ * 等級（rate_limit_tier，例如 default_claude_max_5x）結尾是「幾倍」時加在方案後面：Max 5x。
+ * @param {typeof PALETTES.dark} c
+ * @param {Locale} L
+ * @param {string | null} plan
+ * @param {string | null} [tier]
+ */
+function header(c, L, plan, tier = null) {
   const out = [`<text x="0" y="17" font-size="14" font-weight="600" fill="${c.text}">${esc(L.title)}</text>`];
-  const planName = plan ? PLAN_NAMES[plan] ?? plan : null;
+  let planName = plan ? PLAN_NAMES[plan] ?? plan : null;
+  const times = typeof tier === 'string' ? /(\d+)x$/.exec(tier) : null;
+  if (planName && times) planName += ` ${times[1]}x`;
   if (planName) {
     const x = Math.ceil(textWidth(L.title, 14, true)) + 6.5;
     const w = Math.ceil(textWidth(planName, 11)) + 12;
@@ -522,14 +586,14 @@ function tokenTable(tokens, y, c, L) {
 }
 
 /**
- * @param {{ usage: Usage, plan: string | null, fetchedAt: number, stale: boolean, theme: Theme, warn: number, err: number, now: number, lang?: string, tokens?: TokenWindows | null }} o
+ * @param {{ usage: Usage, plan: string | null, tier?: string | null, fetchedAt: number, stale: boolean, theme: Theme, warn: number, err: number, now: number, lang?: string, tokens?: TokenWindows | null }} o
  * @returns {{ svg: string, width: number, height: number }}
  */
 function renderCard(o) {
   const L = localeFor(o.lang);
   const c = PALETTES[o.theme] ?? PALETTES.dark;
   const rows = rowsOf(o.usage, o.now, L);
-  const out = [header(c, L, o.plan)];
+  const out = [header(c, L, o.plan, o.tier ?? null)];
 
   const updated = o.stale ? L.dataFrom(L.clock(o.fetchedAt, o.now)) : L.updated(o.fetchedAt, o.now);
   out.push(`<text x="${CARD_W}" y="17" text-anchor="end" font-size="12" fill="${o.stale ? c.warning : c.tertiary}">${esc(updated)}</text>`);
@@ -553,19 +617,22 @@ function renderCard(o) {
   }
   y += 4;
 
-  // 各列（資料過時時整體淡出，只留標題列清楚）
+  // 各列：主列在前、模型專屬的精簡列在後（資料過時時整體淡出，只留標題列清楚）
   const sevenDayError = rows.some((r) => r.def.key === 'seven_day' && levelOf(r.s.percent, o.warn, o.err) === 'error');
   const body = [];
-  rows.forEach((row, i) => {
-    body.push(windowRow(row, y + i * ROW_H, c, { warn: o.warn, err: o.err, now: o.now, L, hideTag: row.def.extra && sevenDayError }));
-  });
-  y += rows.length * ROW_H;
+  for (const row of rows) {
+    const opts = { warn: o.warn, err: o.err, now: o.now, L, hideTag: row.def.extra && sevenDayError };
+    body.push(row.def.extra ? extraRow(row, y, c, opts) : windowRow(row, y, c, opts));
+    y += row.def.extra ? EXTRA_ROW_H : ROW_H;
+  }
 
-  // 圖例：第一次看到直線的人也知道它是什麼
+  // 圖例：第一次看到直線的人也知道它是什麼。
+  // 最後一列是精簡列時多留一點距離：它的長條下面沒有重置時間那行，剛重置時步調線會貼在左邊，不留距離就和圖例的標記連成一條。
   const anyPace = rows.some((r) => r.s.elapsed != null);
   const anyAhead = rows.some((r) => r.s.ahead && levelOf(r.s.percent, o.warn, o.err) === 'normal');
+  const gap = rows.length && rows[rows.length - 1].def.extra ? 10 : 0;
   if (anyPace) {
-    const ly = y + 6;
+    const ly = y + 6 + gap;
     body.push(
       `<rect x="2" y="${ly - 9}" width="2" height="11" rx="1" fill="${c.pace}"/>`,
       `<circle cx="3" cy="${ly - 10}" r="2.5" fill="${c.pace}"/>`,
@@ -579,7 +646,7 @@ function renderCard(o) {
         `<text x="${x + 22}" y="${ly}" font-size="12" fill="${c.tertiary}">${esc(L.legend.ahead)}</text>`
       );
     }
-    y += 12;
+    y += 12 + gap;
   }
   out.push(o.stale ? `<g opacity="0.45">${body.join('')}</g>` : body.join(''));
 
@@ -666,7 +733,7 @@ function spokenRow({ def, s }, warn, err, now, L) {
 
 /**
  * @param {{
- *   snapshot: { usage: Usage, fetchedAt: number, plan: string | null } | null,
+ *   snapshot: { usage: Usage, fetchedAt: number, plan: string | null, tier?: string | null } | null,
  *   error: { code: string, message: string, detail?: string } | null,
  *   format: string,
  *   warn: number,
@@ -706,7 +773,7 @@ function renderView({ snapshot, error, format, warn, err, theme, now, lang, toke
     text = level === 'normal' && !format ? `${icon} ${text}` : `${text} ${icon}`;
   }
 
-  const card = renderCard({ usage, plan: snapshot.plan, fetchedAt: snapshot.fetchedAt, stale, theme, warn, err, now, lang, tokens });
+  const card = renderCard({ usage, plan: snapshot.plan, tier: snapshot.tier ?? null, fetchedAt: snapshot.fetchedAt, stale, theme, warn, err, now, lang, tokens });
   const head = headline(rows, warn, err, now, L);
   const spoken = `${L.spoken.prefix}${rows.map((r) => spokenRow(r, warn, err, now, L)).join(L.spoken.join)}${L.spoken.end}`;
   const costNote =

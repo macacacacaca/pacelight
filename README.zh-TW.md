@@ -42,8 +42,8 @@ Pacelight 待在狀態列「✻ Claude Code」旁邊，平常不打擾，需要�
 - **直接給答案。** 滑鼠移上去，第一句就回答你真正想知道的事：「照目前速度，7 天額度明天（週五）23:00 左右就會用完，比重置早 3 天 22 小時。」接著告訴你怎麼撐過去：「想撐到週二 22:00 重置，每天用 8% 以內。」
 - **步調一看就懂。** 每個區間一條長條，直線標出時間過到哪裡；超過直線的斜紋，就是用得比時間快的部分。
 - **換算成 API 費用。** 這台電腦的 Claude Code 在每個區間用了多少 token，照 Anthropic API 牌價要花多少錢。
-- **方案裡的每項額度。** Max 方案「僅 Sonnet」這類單一模型的每週額度，也會列在卡片上，並一樣觸發警告色。
-- **不浪費請求。** 預設每 2 分鐘查一次，所有 VS Code 視窗共用同一份結果，出錯時自動放慢。
+- **方案裡的每項額度。** Max 方案「僅 Sonnet」「僅 Fable」這類單一模型的每週額度，會以精簡列列在卡片 7 天額度的下面，並一樣觸發警告色；伺服器回應裡舊的單一模型欄位和新的 `limits[]` 清單都會讀。
+- **不浪費請求。** 預設每 2 分鐘查一次，所有 VS Code 視窗共用同一份結果，出錯時自動放慢；方案名稱最多每小時查一次。
 - **不靠顏色也看得懂。** 狀態都有文字說明，狀態列和卡片也都有讀屏文字。
 - **英文與繁體中文介面。**
 
@@ -63,10 +63,10 @@ Pacelight 待在狀態列「✻ Claude Code」旁邊，平常不打擾，需要�
 | | Pacelight 的做法 |
 |:--|:--|
 | **收集的資料** | 沒有。沒有遙測，沒有分析。 |
-| **網路** | 只有一個請求：`GET https://api.anthropic.com/api/oauth/usage`，不連其他地方。 |
+| **網路** | 兩個請求，都只連 `api.anthropic.com`：用量 `GET https://api.anthropic.com/api/oauth/usage`（預設每 2 分鐘），方案名稱 `GET https://api.anthropic.com/api/oauth/profile`（最多每小時一次，手動更新時也會查）。不連其他地方。 |
 | **你的登入權杖** | 從 Claude Code 自己的儲存位置讀取，只送往 `api.anthropic.com`；不寫進記錄或磁碟，也不會刷新。 |
 | **你的對話記錄** | 只在記憶體裡留下 token 數、模型名稱和時間；對話內容不會被儲存或送出。 |
-| **存在磁碟上的** | 擴充功能儲存區裡的 `last-usage.json`：百分比、重置時間、方案名稱、查詢時間。 |
+| **存在磁碟上的** | 擴充功能儲存區裡的 `last-usage.json`：百分比、重置時間、方案名稱與等級（例如 Max 5x）、用量與方案的查詢時間。不存 email、名字。 |
 
 送出的 User-Agent 是本工具自己的名稱（`pacelight/<版本>`），不冒充 Claude Code。
 
@@ -121,10 +121,11 @@ Pacelight 只在你自己的電腦上讀權杖、只查你自己的用量、不�
 <br>
 
 1. 從 macOS 鑰匙圈的「Claude Code-credentials」（其他平台是 `~/.claude/.credentials.json`）讀 Claude Code 的訂閱登入權杖。
-2. 用它呼叫 `GET https://api.anthropic.com/api/oauth/usage`，取出 `five_hour.utilization` 和 `seven_day.utilization`。
+2. 用它呼叫 `GET https://api.anthropic.com/api/oauth/usage`，取出 `five_hour.utilization`、`seven_day.utilization`，以及單一模型的每週額度（`seven_day_opus`、`seven_day_sonnet`，或 `limits[]` 裡 `weekly_scoped` 的項目）。
+3. 卡片上的方案標籤來自 `GET https://api.anthropic.com/api/oauth/profile`，只留 `organization.organization_type`（Pro、Max…）和 `rate_limit_tier`（5x、20x），最多每小時查一次，手動更新時也會查。Claude Code 鑰匙圈裡雖然也有 `subscriptionType`，但它只在登入時寫入、升級方案後不會更新，所以只在 profile 查不到方案、又沒有先前查到的結果時當備援。
 
 - 只讀權杖，不會自己刷新（刷新會輪替 refresh token，可能讓 Claude Code 被登出）。權杖過期時，狀態列會把數字標成不是最新的，卡片上會說明原因；等 Claude Code 下次送出訊息就會自動刷新。
-- 這個端點沒有公開文件，日後可能改變。改了的話，狀態列會把數字標成不是最新的，卡片上會顯示警告；資料解析在 [src/usage.js](src/usage.js)。
+- 這兩個端點都沒有公開文件，日後可能改變。用量端點改了的話，狀態列會把數字標成不是最新的，卡片上會顯示警告；profile 端點改了，卡片只會沿用上次的方案標籤。資料解析在 [src/usage.js](src/usage.js)。
 - 只有 Pro、Max 等訂閱登入才有這份資料；API 金鑰登入會顯示「未登入訂閱」（英文介面是「No subscription login」）。
 
 </details>
@@ -169,7 +170,7 @@ npm run check:privacy  # push 或發布前跑：檢查要公開的檔案、git �
 ```
 
 - 在 VS Code 開這個資料夾按 F5，會開一個「擴充功能開發主機」視窗來試。
-- 想把自己打包的版本裝到平常用的 VS Code：執行 `npm run package`，再執行 `code --install-extension pacelight-0.1.0.vsix`，最後執行「Developer: Reload Window」。macOS 找不到 `code` 指令的話，先在命令面板執行「Shell Command: Install 'code' command in PATH」。
+- 想把自己打包的版本裝到平常用的 VS Code：執行 `npm run package`，再執行 `code --install-extension pacelight-0.1.1.vsix`，最後執行「Developer: Reload Window」。macOS 找不到 `code` 指令的話，先在命令面板執行「Shell Command: Install 'code' command in PATH」。
 
 | 檔案 | 內容 |
 |:--|:--|
